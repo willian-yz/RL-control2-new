@@ -304,20 +304,21 @@ class ExperimentManager:
         self.meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         return save_path
 
-    def test(self, model_path: str, episodes: int = 1) -> list[float]:
+    def test(self, model_path: str, tot_steps: int = 1) -> list[float]:
         env = CompressorEnv(self.env_config, self.rl_config, mode="test")
         model = PPO.load(model_path)
         episode_rewards: list[float] = []
 
-        for _ in range(episodes):
-            obs = env.reset()
-            done = False
-            total_reward = 0.0
-            while not done:
-                action, _ = model.predict(obs, deterministic=True)
-                obs, reward, done, _ = env.step(action)
-                total_reward += float(reward)
-            episode_rewards.append(total_reward)
+
+        obs = env.reset()
+        done = False
+        total_reward = 0.0
+        step = 0
+        while not done and step <= tot_steps:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, done, _ = env.step(action)
+            total_reward += float(reward)
+        episode_rewards.append(total_reward)
         env.close()
         return episode_rewards
 
