@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 import csv
+from datetime import datetime
 import json
 import logging
 import os
@@ -63,13 +64,24 @@ class HistoryRecorder:
         self.root.mkdir(parents=True, exist_ok=True)
         self.csv_path = self.root / f"case{case_id}_{mode}_history.csv"
 
-    def append(self, row: dict) -> None:
-        write_header = not self.csv_path.exists()
-        with self.csv_path.open("a", newline="", encoding="utf-8") as f:
+    def _fallback_path(self) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return self.csv_path.with_name(f"{self.csv_path.stem}_{timestamp}{self.csv_path.suffix}")
+
+    def _write_row(self, path: Path, row: dict) -> None:
+        write_header = not path.exists()
+        with path.open("a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(row.keys()))
             if write_header:
                 writer.writeheader()
             writer.writerow(row)
+
+    def append(self, row: dict) -> None:
+        try:
+            self._write_row(self.csv_path, row)
+        except PermissionError:
+            fallback = self._fallback_path()
+            self._write_row(fallback, row)
 
     def to_dataframe(self) -> pd.DataFrame:
         if not self.csv_path.exists():
@@ -279,6 +291,24 @@ class ExperimentManager:
             ent_coef=self.rl_config.ent_coef,
         )
 
+    def _write_text_with_fallback(self, path: Path, content: str) -> Path:
+        try:
+            path.write_text(content, encoding="utf-8")
+            return path
+        except PermissionError:
+            fallback = path.with_name(f"{path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{path.suffix}")
+            fallback.write_text(content, encoding="utf-8")
+            return fallback
+
+    def _save_figure_with_fallback(self, fig, output: Path) -> Path:
+        try:
+            fig.savefig(output, dpi=180)
+            return output
+        except PermissionError:
+            fallback = output.with_name(f"{output.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{output.suffix}")
+            fig.savefig(fallback, dpi=180)
+            return fallback
+
     def train(self, train_steps: int, load_model_path: Optional[str] = None) -> Path:
         env = DummyVecEnv([lambda: CompressorEnv(self.env_config, self.rl_config, mode="train")])
         if load_model_path:
@@ -292,7 +322,11 @@ class ExperimentManager:
         total_steps = existing_steps + train_steps
         save_name = f"my_model_case{self.env_config.case_id}_step{total_steps}"
         save_path = self.artifact_dir / save_name
-        model.save(str(save_path))
+        try:
+            model.save(str(save_path))
+        except PermissionError:
+            save_path = save_path.with_name(f"{save_path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{save_path.suffix}")
+            model.save(str(save_path))
 
         meta = {
             "case_id": self.env_config.case_id,
@@ -301,7 +335,7 @@ class ExperimentManager:
             "env_config": asdict(self.env_config),
             "rl_config": asdict(self.rl_config),
         }
-        self.meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._write_text_with_fallback(self.meta_path, json.dumps(meta, ensure_ascii=False, indent=2))
         return save_path
 
     def test(self, model_path: str, tot_steps: int = 1) -> list[float]:
@@ -314,10 +348,11 @@ class ExperimentManager:
         done = False
         total_reward = 0.0
         step = 0
-        while not done and step <= tot_steps:
+        while not done and step < tot_steps:
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, _ = env.step(action)
             total_reward += float(reward)
+            step += 1
         episode_rewards.append(total_reward)
         env.close()
         return episode_rewards
@@ -343,6 +378,6 @@ class ExperimentManager:
         fig.tight_layout()
 
         output = self.artifact_dir / f"case{self.env_config.case_id}_{mode}_history.png"
-        fig.savefig(output, dpi=180)
+        output = self._save_figure_with_fallback(fig, output)
         plt.close(fig)
         return output
