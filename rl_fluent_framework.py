@@ -191,7 +191,7 @@ class CompressorEnv(gym.Env):
         if latest_file is None:
             self.logger.warning("No report file found, fallback to last_tploss=%.6f", self.last_tploss)
             return float(self.last_tploss)
-        tploss_value = float(pd.read_csv(latest_file, sep=r"\s+", skiprows=2).iloc[-1, 2]) * 10.0
+        tploss_value = float(pd.read_csv(latest_file, sep=r"\s+", skiprows=2).iloc[-1, 1]) * 10.0 #区分瞬时值和平均值
         self.logger.info("Read tploss %.6f from %s", tploss_value, latest_file)
         return tploss_value
 
@@ -292,19 +292,23 @@ class ExperimentManager:
         )
 
     def _write_text_with_fallback(self, path: Path, content: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
         try:
             path.write_text(content, encoding="utf-8")
             return path
-        except PermissionError:
+        except (PermissionError, FileNotFoundError):
+            path.parent.mkdir(parents=True, exist_ok=True)
             fallback = path.with_name(f"{path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{path.suffix}")
             fallback.write_text(content, encoding="utf-8")
             return fallback
 
     def _save_figure_with_fallback(self, fig, output: Path) -> Path:
+        output.parent.mkdir(parents=True, exist_ok=True)
         try:
             fig.savefig(output, dpi=180)
             return output
-        except PermissionError:
+        except (PermissionError, FileNotFoundError):
+            output.parent.mkdir(parents=True, exist_ok=True)
             fallback = output.with_name(f"{output.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{output.suffix}")
             fig.savefig(fallback, dpi=180)
             return fallback
