@@ -13,11 +13,12 @@ def build_case3_configs() -> tuple[EnvConfig, RLConfig]:
         initial_tploss=0.07,
     )
     rl_config = RLConfig(
-        action_dim=1,
-        amplitude_range=(-100, 200.0),
+        action_dim=2,
+        amplitude_range=(0.0, 200.0),
+        frequency_range=(200.0, 2000.0),
         baseline_tploss=0.07,
         expr_mode="constant",
-        n_steps=80, #80 步训练一次
+        n_steps=80, #80 #2步训练一次
         n_epochs=5, #参数更新5次
     )
     return env_config, rl_config
@@ -27,7 +28,7 @@ def main() -> None:
     env_config, rl_config = build_case3_configs()
     manager = ExperimentManager(env_config, rl_config)
 
-    model_path = manager.train(train_steps=80*15)
+    model_path = manager.train(train_steps=80*4)
     print(f"Saved model: {model_path}")
     plot_path_train = manager.plot_history(mode="train")
     print(f"Train history plot: {plot_path_train}")

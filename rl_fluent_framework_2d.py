@@ -131,7 +131,7 @@ class CompressorEnv(gym.Env):
     def _launch_fluent_session(self):
         session = pyfluent.launch_fluent(
             mode="solver",
-            dimension=3,
+            dimension=2,
             show_gui=self.env_config.show_gui,
             processor_count=self.env_config.processor_count,
         )
