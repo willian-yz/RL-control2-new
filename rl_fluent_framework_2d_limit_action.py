@@ -42,6 +42,8 @@ class RLConfig:
     action_dim: int = 1
     amplitude_range: tuple[float, float] = (0.0, 200.0)
     frequency_range: tuple[float, float] = (200.0, 2000.0)
+    max_delta_amplitude: float = 20.0
+    use_delta_action: bool = False
     expr_mode: str = "constant"  # "constant" or "sin"
     pi: float = 3.1415926
     t0: float = 0.210084
@@ -102,16 +104,29 @@ class CompressorEnv(gym.Env):
         self.a_min, self.a_max = self.rl_config.amplitude_range
         self.f_min, self.f_max = self.rl_config.frequency_range
 
-        self.action_space = spaces.Box(low=0.0, high=1.0, shape=(self.rl_config.action_dim,), dtype=np.float32)
+        if self.rl_config.use_delta_action:
+            if self.rl_config.action_dim == 1:
+                self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+            else:
+                self.action_space = spaces.Box(
+                    low=np.array([-1.0, 0.0], dtype=np.float32),
+                    high=np.array([1.0, 1.0], dtype=np.float32),
+                    dtype=np.float32,
+                )
+        else:
+            self.action_space = spaces.Box(low=0.0, high=1.0, shape=(self.rl_config.action_dim,), dtype=np.float32)
+        action_obs_low = -1.0 if self.rl_config.use_delta_action else 0.0
+
+        #这里的observation_space需要修改，修改成shape=[A, total_loss,观测点数量]，其中观测点数量为60个，用rake_list来读取，需要是1~9
         if self.rl_config.action_dim == 1:
             self.observation_space = spaces.Box(
-                low=np.array([0.0, -np.inf, 0.0], dtype=np.float32), # A, total_loss, steps_of_decision
+                low=np.array([action_obs_low, -np.inf, 0.0], dtype=np.float32), # A, total_loss, steps_of_decision
                 high=np.array([1.0, np.inf, 1.0], dtype=np.float32),
                 dtype=np.float32,
             )
         else:
             self.observation_space = spaces.Box(
-                low=np.array([0.0, 0.0, -np.inf, 0.0], dtype=np.float32), # A, f, total_loss, steps_of_decision
+                low=np.array([action_obs_low, 0.0, -np.inf, 0.0], dtype=np.float32), # A, f, total_loss, steps_of_decision
                 high=np.array([1.0, 1.0, np.inf, 1.0], dtype=np.float32),
                 dtype=np.float32,
             )
@@ -119,6 +134,7 @@ class CompressorEnv(gym.Env):
         self.history = HistoryRecorder(Path(history_dir), self.env_config.case_id, mode)
         self.session = self._launch_fluent_session()
         self._reset_internal_state()
+
 
     def _setup_logger(self) -> None:
         self.logger = logging.getLogger(f"{__name__}.{self.env_config.case_id}.{id(self)}")
@@ -152,9 +168,28 @@ class CompressorEnv(gym.Env):
         a_norm = float(np.clip(action_a, 0.0, 1.0))
         return float(self.a_min + a_norm * (self.a_max - self.a_min))
 
+    def _limit_amplitude_step(self, target_amplitude: float) -> float:
+        max_delta = abs(float(self.rl_config.max_delta_amplitude))
+        if max_delta <= 0:
+            return float(np.clip(target_amplitude, self.a_min, self.a_max))
+        lower = self.a_current - max_delta
+        upper = self.a_current + max_delta
+        return float(np.clip(target_amplitude, lower, upper))
+
+
+    def _action_to_amplitude(self, action_a: float) -> float:
+        if self.rl_config.use_delta_action:
+            delta_norm = float(np.clip(action_a, -1.0, 1.0))
+            delta = delta_norm * abs(float(self.rl_config.max_delta_amplitude))
+            target_amplitude = self.a_current + delta
+            return float(np.clip(target_amplitude, self.a_min, self.a_max))
+
+        target_amplitude = self._normalized_to_amplitude(action_a)
+        return self._limit_amplitude_step(target_amplitude)
+
     def _normalized_to_frequency(self, action_f: float) -> float:
         f_norm = float(np.clip(action_f, 0.0, 1.0))
-        return float(self.f_min + f_norm * (self.a_max - self.a_min))
+        return float(self.f_min + f_norm * (self.f_max - self.f_min))
 
     def _make_velocity_expression(self, amplitude: float, frequency: Optional[float] = None) -> str:
         if self.rl_config.action_dim == 1:
@@ -199,6 +234,13 @@ class CompressorEnv(gym.Env):
     def _compute_reward(self, tploss_scaled: float) -> float:
         return self.rl_config.baseline_tploss * 10.0 - tploss_scaled
 
+    # 这里build_observation需要重新改写，去除t_idx部分，增加rake-1 ~rake-9的速度方向结果，为如下：
+    # field_data = self.session.fields.field_data
+    # rake_list = ["rake-1", "rake-2", "rake-3", "rake-4", "rake-5", "rake-6", "rake-7", "rake-8", "rake-9"]
+    #
+    # for i_rake_list in range(9):
+    #     abs_press_data_vx = field_data.get_scalar_field_data(field_name="x-velocity", surfaces=[rake_list[i_rake_list]])
+    #     abs_press_data_vy = field_data.get_scalar_field_data(field_name="y-velocity", surfaces=[rake_list[i_rake_list]])
     def _build_observation(self, action: np.ndarray, tploss_scaled: float) -> np.ndarray:
         progress = self.t_idx / self.env_config.max_decisions
         if self.rl_config.action_dim == 1:
@@ -225,11 +267,11 @@ class CompressorEnv(gym.Env):
         self.decision_count += 1
         action = np.asarray(action, dtype=np.float32).reshape(-1)
         if self.rl_config.action_dim == 1:
-            amplitude = self._normalized_to_amplitude(action[0])
+            amplitude = self._action_to_amplitude(action[0])
             frequency = None
             self.current_velocity_expr = self._make_velocity_expression(amplitude)
         else:
-            amplitude = self._normalized_to_amplitude(action[0])
+            amplitude = self._action_to_amplitude(action[0])
             frequency = self._normalized_to_frequency(action[1])
             self.current_velocity_expr = self._make_velocity_expression(amplitude, frequency)
 
@@ -300,6 +342,7 @@ class ExperimentManager:
             clip_range=self.rl_config.clip_range,
             gae_lambda=self.rl_config.gae_lambda,
             ent_coef=self.rl_config.ent_coef,
+
         )
 
     def _write_text_with_fallback(self, path: Path, content: str) -> Path:

@@ -1,22 +1,24 @@
 """Case 4 runner based on the unified RL+Fluent framework."""
 
-from rl_fluent_framework_2d import EnvConfig, RLConfig, ExperimentManager
+from rl_fluent_framework_2d_limit_action  import EnvConfig, RLConfig, ExperimentManager
 
 
 def build_case5_configs() -> tuple[EnvConfig, RLConfig]:
     env_config = EnvConfig(
-        case_id=5,
-        cas_path="i8.5 A=0 w=0.055_withwake.cas",
-        data_path="i8.5 A=0 w=0.055_withwake.dat",
-        workdir=r"E:\A keti\Case\50theta_b_t1.6_bow20_M0.5_i+8.5_2D\2d wake rl",
+        case_id=6,
+        cas_path="i12 rl.cas",
+        data_path="i12 rl.dat",
+        workdir=r"E:\A keti\Case\50theta_b_t1.6_bow20_M0.5_i+8.5_2D\2d wake rl change inlet angle",
         max_decisions=100, #100
-        initial_tploss=0.09,
+        initial_tploss=0.2,
         processor_count = 4,
     )
     rl_config = RLConfig(
         action_dim=1,
         amplitude_range=(-100.0, 200.0),
-        baseline_tploss=0.09,
+        baseline_tploss=0.2,
+        max_delta_amplitude = 20.0, #修改后
+        use_delta_action=True,      #修改后
         expr_mode="constant",
         n_steps=50, #80 #2步训练一次
         n_epochs=5, #参数更新5次
@@ -28,12 +30,12 @@ def main() -> None:
     env_config, rl_config = build_case5_configs()
     manager = ExperimentManager(env_config, rl_config)
 
-    # model_path = manager.train(train_steps=100*30)
+    # model_path = manager.train(train_steps=100*20)
     # print(f"Saved model: {model_path}")
     # plot_path_train = manager.plot_history(mode="train")
     # print(f"Train history plot: {plot_path_train}")
 
-    rewards = manager.test(model_path=r'E:\A keti\Case\50theta_b_t1.6_bow20_M0.5_i+8.5_2D\2d wake rl\artifacts\my_model_case5_step3000.zip', tot_steps=100)
+    rewards = manager.test(model_path=r'E:\A keti\Case\50theta_b_t1.6_bow20_M0.5_i+8.5_2D\2d wake rl change inlet angle\artifacts\my_model_case6_step2000.zip', tot_steps=100)
     plot_path_test = manager.plot_history(mode="test")
     print(f"Test episode rewards: {rewards}")
     print(f"Test history plot: {plot_path_test}")
