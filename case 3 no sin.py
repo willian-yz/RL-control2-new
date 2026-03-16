@@ -8,7 +8,7 @@ def build_case3_configs() -> tuple[EnvConfig, RLConfig]:
         case_id=3,
         cas_path="70 angle unsteady_jet0_dt=0.03s.cas.h5",
         data_path="70 angle unsteady_jet0_dt=0.03s.dat.h5",
-        workdir=r"D:\LYZ\A case 3 sin with hole jet ag70",
+        workdir=r"D:\LYZ\A case 3 no sin with hole jet ag70",
         max_decisions=80, #80
         initial_tploss=0.07,
     )
@@ -27,7 +27,7 @@ def main() -> None:
     env_config, rl_config = build_case3_configs()
     manager = ExperimentManager(env_config, rl_config)
 
-    model_path = manager.train(train_steps=80*15)
+    model_path = manager.train(train_steps=80*5,load_model_path=r'D:\LYZ\A case 3 no sin with hole jet ag70\artifacts\my_model_case3_step1200.zip')
     print(f"Saved model: {model_path}")
     plot_path_train = manager.plot_history(mode="train")
     print(f"Train history plot: {plot_path_train}")

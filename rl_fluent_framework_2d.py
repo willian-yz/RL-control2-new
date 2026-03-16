@@ -49,7 +49,7 @@ class RLConfig:
 
     learning_rate: float = 5e-4
     n_steps: int = 80
-    batch_size: int = 20
+    batch_size: int = 40
     n_epochs: int = 5
     clip_range: float = 0.2
     gae_lambda: float = 0.95
