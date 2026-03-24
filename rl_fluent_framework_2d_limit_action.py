@@ -32,9 +32,22 @@ class EnvConfig:
     slice_len: int = 10
     max_decisions: int = 80
     inlet_name: str = "hole_inlet"
+    inlet_names_dim2: tuple[str, str] = ("hole_inlet_1", "hole_inlet_2")
     report_file_prefix: str = "report-def-0-rfile"
     max_iter_per_step: int = 30
     initial_tploss: float = 0.7
+    rake_names: tuple[str, ...] = (
+        "rake-1",
+        "rake-2",
+        "rake-3",
+        "rake-4",
+        "rake-5",
+        "rake-6",
+        "rake-7",
+        "rake-8",
+        "rake-9",
+    )
+    rake_point_count: int = 60
 
 
 @dataclass
@@ -117,17 +130,37 @@ class CompressorEnv(gym.Env):
             self.action_space = spaces.Box(low=0.0, high=1.0, shape=(self.rl_config.action_dim,), dtype=np.float32)
         action_obs_low = -1.0 if self.rl_config.use_delta_action else 0.0
 
-        #这里的observation_space需要修改，修改成shape=[A, total_loss,观测点数量]，其中观测点数量为60个，用rake_list来读取，需要是1~9
+        velocity_feature_dim = self.env_config.rake_point_count * 2  # Vx+Vy
         if self.rl_config.action_dim == 1:
             self.observation_space = spaces.Box(
-                low=np.array([action_obs_low, -np.inf, 0.0], dtype=np.float32), # A, total_loss, steps_of_decision
-                high=np.array([1.0, np.inf, 1.0], dtype=np.float32),
+                low=np.concatenate(
+                    [
+                        np.array([action_obs_low, -np.inf], dtype=np.float32),  # A, tploss
+                        np.full(velocity_feature_dim, -np.inf, dtype=np.float32),
+                    ]
+                ),
+                high=np.concatenate(
+                    [
+                        np.array([1.0, np.inf], dtype=np.float32),
+                        np.full(velocity_feature_dim, np.inf, dtype=np.float32),
+                    ]
+                ),
                 dtype=np.float32,
             )
         else:
             self.observation_space = spaces.Box(
-                low=np.array([action_obs_low, 0.0, -np.inf, 0.0], dtype=np.float32), # A, f, total_loss, steps_of_decision
-                high=np.array([1.0, 1.0, np.inf, 1.0], dtype=np.float32),
+                low=np.concatenate(
+                    [
+                        np.array([action_obs_low, 0.0, -np.inf], dtype=np.float32),  # A, f, tploss
+                        np.full(velocity_feature_dim, -np.inf, dtype=np.float32),
+                    ]
+                ),
+                high=np.concatenate(
+                    [
+                        np.array([1.0, 1.0, np.inf], dtype=np.float32),
+                        np.full(velocity_feature_dim, np.inf, dtype=np.float32),
+                    ]
+                ),
                 dtype=np.float32,
             )
 
@@ -158,6 +191,7 @@ class CompressorEnv(gym.Env):
 
     def _reset_internal_state(self) -> None:
         self.a_current = 0.0
+        self.a_current_2 = 0.0
         self.f_current = 0.0
         self.current_velocity_expr = "0[m s^-1]"
         self.last_tploss = float(self.env_config.initial_tploss)
@@ -177,15 +211,21 @@ class CompressorEnv(gym.Env):
         return float(np.clip(target_amplitude, lower, upper))
 
 
-    def _action_to_amplitude(self, action_a: float) -> float:
+    def _action_to_amplitude(self, action_a: float, current_amplitude: Optional[float] = None) -> float:
+        amp_now = self.a_current if current_amplitude is None else float(current_amplitude)
         if self.rl_config.use_delta_action:
             delta_norm = float(np.clip(action_a, -1.0, 1.0))
             delta = delta_norm * abs(float(self.rl_config.max_delta_amplitude))
-            target_amplitude = self.a_current + delta
+            target_amplitude = amp_now + delta
             return float(np.clip(target_amplitude, self.a_min, self.a_max))
 
         target_amplitude = self._normalized_to_amplitude(action_a)
-        return self._limit_amplitude_step(target_amplitude)
+        max_delta = abs(float(self.rl_config.max_delta_amplitude))
+        if max_delta <= 0:
+            return float(np.clip(target_amplitude, self.a_min, self.a_max))
+        lower = amp_now - max_delta
+        upper = amp_now + max_delta
+        return float(np.clip(target_amplitude, lower, upper))
 
     def _normalized_to_frequency(self, action_f: float) -> float:
         f_norm = float(np.clip(action_f, 0.0, 1.0))
@@ -196,15 +236,19 @@ class CompressorEnv(gym.Env):
             return f"{amplitude:.2f}[m s^-1]"
 
         if self.rl_config.action_dim == 2:
-            return (
-                f"{amplitude:.2f}[m s^-1]*sin(2*{self.rl_config.pi}*{frequency:.2f} [s^-1]"
-                f"*(t - {self.rl_config.t0}[s]))"
-            )
+            return f"{amplitude:.2f}[m s^-1]"
 
-    def _set_inlet_velocity(self, velocity_expression: str) -> None:
-        self.session.setup.boundary_conditions.velocity_inlet[
-            self.env_config.inlet_name
-        ].momentum.velocity.value = velocity_expression
+    def _set_inlet_velocity(self, velocity_expression: str, velocity_expression_dim2: Optional[str] = None) -> None:
+        if self.rl_config.action_dim == 2:
+            inlet_1, inlet_2 = self.env_config.inlet_names_dim2
+            expr_2 = velocity_expression if velocity_expression_dim2 is None else velocity_expression_dim2
+            self.session.setup.boundary_conditions.velocity_inlet[inlet_1].momentum.velocity.value = velocity_expression
+            self.session.setup.boundary_conditions.velocity_inlet[inlet_2].momentum.velocity.value = expr_2
+            return
+
+        self.session.setup.boundary_conditions.velocity_inlet[self.env_config.inlet_name].momentum.velocity.value = (
+            velocity_expression
+        )
 
     def _advance_simulation(self) -> None:
         self.session.settings.solution.run_calculation.dual_time_iterate(
@@ -234,18 +278,76 @@ class CompressorEnv(gym.Env):
     def _compute_reward(self, tploss_scaled: float) -> float:
         return self.rl_config.baseline_tploss * 10.0 - tploss_scaled
 
-    # 这里build_observation需要重新改写，去除t_idx部分，增加rake-1 ~rake-9的速度方向结果，为如下：
-    # field_data = self.session.fields.field_data
-    # rake_list = ["rake-1", "rake-2", "rake-3", "rake-4", "rake-5", "rake-6", "rake-7", "rake-8", "rake-9"]
-    #
-    # for i_rake_list in range(9):
-    #     abs_press_data_vx = field_data.get_scalar_field_data(field_name="x-velocity", surfaces=[rake_list[i_rake_list]])
-    #     abs_press_data_vy = field_data.get_scalar_field_data(field_name="y-velocity", surfaces=[rake_list[i_rake_list]])
+    def _to_1d_numeric_array(self, data_obj) -> np.ndarray:
+        def _try_cast(candidate) -> Optional[np.ndarray]:
+            if candidate is None:
+                return None
+            try:
+                arr = np.asarray(candidate, dtype=np.float64).reshape(-1)
+                if arr.size:
+                    return arr
+            except Exception:
+                return None
+            return None
+
+        if isinstance(data_obj, dict):
+            for value in data_obj.values():
+                result = _try_cast(value)
+                if result is not None:
+                    return result
+
+        for attr in ("scalar_data", "values", "data", "field_data"):
+            if hasattr(data_obj, attr):
+                result = _try_cast(getattr(data_obj, attr))
+                if result is not None:
+                    return result
+
+        result = _try_cast(data_obj)
+        return result if result is not None else np.zeros(0, dtype=np.float64)
+
+    def _read_rake_velocity_features(self) -> np.ndarray:
+        target_points = int(self.env_config.rake_point_count)
+        vx_values: list[np.ndarray] = []
+        vy_values: list[np.ndarray] = []
+
+        try:
+            field_data = self.session.fields.field_data
+            for rake_name in self.env_config.rake_names:
+                vx_raw = field_data.get_scalar_field_data(field_name="x-velocity", surfaces=[rake_name])
+                vy_raw = field_data.get_scalar_field_data(field_name="y-velocity", surfaces=[rake_name])
+                vx_values.append(self._to_1d_numeric_array(vx_raw))
+                vy_values.append(self._to_1d_numeric_array(vy_raw))
+        except Exception as error:
+            self.logger.warning("Failed to read rake velocities, fallback to zeros: %s", error)
+            return np.zeros(target_points * 2, dtype=np.float32)
+
+        vx = np.concatenate(vx_values) if vx_values else np.zeros(0, dtype=np.float64)
+        vy = np.concatenate(vy_values) if vy_values else np.zeros(0, dtype=np.float64)
+
+        if vx.size < target_points:
+            vx = np.pad(vx, (0, target_points - vx.size), mode="constant")
+        if vy.size < target_points:
+            vy = np.pad(vy, (0, target_points - vy.size), mode="constant")
+
+        vx = vx[:target_points]
+        vy = vy[:target_points]
+        return np.concatenate([vx, vy]).astype(np.float32)
+
     def _build_observation(self, action: np.ndarray, tploss_scaled: float) -> np.ndarray:
-        progress = self.t_idx / self.env_config.max_decisions
+        velocity_features = self._read_rake_velocity_features()
         if self.rl_config.action_dim == 1:
-            return np.array([action[0], tploss_scaled, progress], dtype=np.float32)
-        return np.array([action[0], action[1], tploss_scaled, progress], dtype=np.float32)
+            return np.concatenate(
+                [
+                    np.array([action[0], tploss_scaled], dtype=np.float32),
+                    velocity_features,
+                ]
+            )
+        return np.concatenate(
+            [
+                np.array([action[0], action[1], tploss_scaled], dtype=np.float32),
+                velocity_features,
+            ]
+        )
 
     def reset(self):
         self.session.settings.file.read_data(file_name=self.env_config.data_path)
@@ -254,11 +356,14 @@ class CompressorEnv(gym.Env):
         if self.rl_config.action_dim == 1:
             amplitue = self._normalized_to_amplitude(action_init[0])
             self.current_velocity_expr = self._make_velocity_expression(amplitue)
+            self._set_inlet_velocity(self.current_velocity_expr)
         else:
-            amplitude = self._normalized_to_amplitude(action_init[0])
-            frequency = self._normalized_to_frequency(action_init[1])
-            self.current_velocity_expr = self._make_velocity_expression(amplitude, frequency)
-        self._set_inlet_velocity(self.current_velocity_expr)
+            amplitude_1 = self._normalized_to_amplitude(action_init[0])
+            amplitude_2 = self._normalized_to_amplitude(action_init[1])
+            expr_1 = self._make_velocity_expression(amplitude_1)
+            expr_2 = self._make_velocity_expression(amplitude_2)
+            self.current_velocity_expr = f"{expr_1} | {expr_2}"
+            self._set_inlet_velocity(expr_1, expr_2)
 
         self.last_tploss = float(self.env_config.initial_tploss)
         return self._build_observation(action_init, self.last_tploss)
@@ -270,18 +375,23 @@ class CompressorEnv(gym.Env):
             amplitude = self._action_to_amplitude(action[0])
             frequency = None
             self.current_velocity_expr = self._make_velocity_expression(amplitude)
+            self._set_inlet_velocity(self.current_velocity_expr)
         else:
-            amplitude = self._action_to_amplitude(action[0])
-            frequency = self._normalized_to_frequency(action[1])
-            self.current_velocity_expr = self._make_velocity_expression(amplitude, frequency)
-
-        self._set_inlet_velocity(self.current_velocity_expr)
+            amplitude = self._action_to_amplitude(action[0], current_amplitude=self.a_current)
+            amplitude_2 = self._action_to_amplitude(action[1], current_amplitude=self.a_current_2)
+            frequency = None
+            expr_1 = self._make_velocity_expression(amplitude)
+            expr_2 = self._make_velocity_expression(amplitude_2)
+            self.current_velocity_expr = f"{expr_1} | {expr_2}"
+            self._set_inlet_velocity(expr_1, expr_2)
 
         self._advance_simulation()
         tploss_scaled = self._read_latest_tploss_scaled()
         reward = self._compute_reward(tploss_scaled)
 
         self.a_current = amplitude
+        if self.rl_config.action_dim == 2:
+            self.a_current_2 = amplitude_2
         self.f_current = float(frequency) if frequency is not None else 0.0
         self.last_tploss = tploss_scaled
         self.t_idx += 1
@@ -292,7 +402,7 @@ class CompressorEnv(gym.Env):
         info = {
             "tploss_now": tploss_scaled,
             "A": amplitude,
-            "f": frequency if frequency is not None else "",
+            "f": self.a_current_2 if self.rl_config.action_dim > 1 else "",
             "expr": self.current_velocity_expr,
             "t_idx": self.t_idx,
             "reward_now": reward,
@@ -306,7 +416,7 @@ class CompressorEnv(gym.Env):
             "action_a": float(action[0]),
             "action_f": float(action[1]) if self.rl_config.action_dim > 1 else "",
             "A": amplitude,
-            "f": frequency if self.rl_config.action_dim > 1 else "",
+            "f": self.a_current_2 if self.rl_config.action_dim > 1 else "",
             "expr": self.current_velocity_expr,
         }
         self.history.append(row)
