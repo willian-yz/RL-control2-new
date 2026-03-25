@@ -197,6 +197,7 @@ class CompressorEnv(gym.Env):
         self.last_tploss = float(self.env_config.initial_tploss)
         self.t_idx = 0
         self.decision_count = 0
+        self._needs_session_restart = False
 
     def _normalized_to_amplitude(self, action_a: float) -> float:
         a_norm = float(np.clip(action_a, 0.0, 1.0))
@@ -350,6 +351,14 @@ class CompressorEnv(gym.Env):
         )
 
     def reset(self):
+        if getattr(self, "_needs_session_restart", False):
+            try:
+                self.session.exit()
+            except Exception as error:
+                self.logger.warning("Failed to close Fluent session before restart: %s", error)
+            self.session = self._launch_fluent_session()
+            self._needs_session_restart = False
+
         self.session.settings.file.read_data(file_name=self.env_config.data_path)
         self._reset_internal_state()
         action_init = np.zeros(self.rl_config.action_dim, dtype=np.float32)
@@ -397,6 +406,8 @@ class CompressorEnv(gym.Env):
         self.t_idx += 1
 
         done = self.decision_count >= self.env_config.max_decisions
+        if done:
+            self._needs_session_restart = True
         obs = self._build_observation(action, tploss_scaled)
 
         info = {
@@ -486,20 +497,40 @@ class ExperimentManager:
             model = self._build_model(env)
             existing_steps = 0
 
-        model.learn(total_timesteps=train_steps)
-        total_steps = existing_steps + train_steps
-        save_name = f"my_model_case{self.env_config.case_id}_step{total_steps}"
-        save_path = self.artifact_dir / save_name
-        try:
-            model.save(str(save_path))
-        except PermissionError:
-            save_path = save_path.with_name(f"{save_path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{save_path.suffix}")
-            model.save(str(save_path))
+        save_interval = int(self.env_config.max_decisions)
+        if save_interval <= 0:
+            save_interval = int(train_steps)
+
+        trained_steps = 0
+        checkpoints: list[str] = []
+        save_path: Optional[Path] = None
+
+        while trained_steps < train_steps:
+            chunk_steps = min(save_interval, train_steps - trained_steps)
+            model.learn(total_timesteps=chunk_steps, reset_num_timesteps=False) #这里保证是False才能维持步数恒定训练
+            trained_steps += chunk_steps
+
+            total_steps = existing_steps + trained_steps
+            save_name = f"my_model_case{self.env_config.case_id}_step{total_steps}"
+            save_path = self.artifact_dir / save_name
+            try:
+                model.save(str(save_path))
+            except PermissionError:
+                save_path = save_path.with_name(
+                    f"{save_path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{save_path.suffix}"
+                )
+                model.save(str(save_path))
+            checkpoints.append(str(save_path))
+
+        if save_path is None:
+            raise RuntimeError("Training did not run any step; no checkpoint was saved.")
 
         meta = {
             "case_id": self.env_config.case_id,
-            "total_steps": total_steps,
+            "total_steps": existing_steps + trained_steps,
             "model_path": str(save_path),
+            "checkpoints": checkpoints,
+            "save_interval": save_interval,
             "env_config": asdict(self.env_config),
             "rl_config": asdict(self.rl_config),
         }
