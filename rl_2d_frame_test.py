@@ -10,6 +10,7 @@ from datetime import datetime
 import json
 import logging
 import os
+from collections.abc import Iterable
 
 import ansys.fluent.core as pyfluent
 import gym
@@ -151,7 +152,7 @@ class CompressorEnv(gym.Env):
             self.observation_space = spaces.Box(
                 low=np.concatenate(
                     [
-                        np.array([action_obs_low, -1.0, -np.inf], dtype=np.float32),  # A, f, tploss
+                        np.array([action_obs_low, 0.0, -np.inf], dtype=np.float32),  # A, f, tploss
                         np.full(velocity_feature_dim, -np.inf, dtype=np.float32),
                     ]
                 ),
@@ -185,8 +186,8 @@ class CompressorEnv(gym.Env):
             processor_count=self.env_config.processor_count,
         )
         session.settings.file.read_case(file_name=self.env_config.cas_path)
-        session.solution.run_calculation.reporting_interval = self.env_config.slice_len
-        session.solution.run_calculation.profile_update_interval = self.env_config.slice_len
+        session.solution.run_calculation.reporting_interval = 30
+        session.solution.run_calculation.profile_update_interval = 20
         return session
 
     def _reset_internal_state(self) -> None:
@@ -272,9 +273,31 @@ class CompressorEnv(gym.Env):
         if latest_file is None:
             self.logger.warning("No report file found, fallback to last_tploss=%.6f", self.last_tploss)
             return float(self.last_tploss)
-        tploss_value = float(pd.read_csv(latest_file, sep=r"\s+", skiprows=2).iloc[-1, 1]) * 10.0 #区分瞬时值和平均值
-        self.logger.info("Read tploss %.6f from %s", tploss_value, latest_file)
-        return tploss_value
+
+        try:
+            with latest_file.open("rb") as file_obj:
+                file_obj.seek(0, os.SEEK_END)
+                position = file_obj.tell() - 1
+                last_line = b""
+                while position >= 0:
+                    file_obj.seek(position)
+                    char = file_obj.read(1)
+                    if char == b"\n" and last_line:
+                        break
+                    if char != b"\n":
+                        last_line = char + last_line
+                    position -= 1
+            values = np.fromstring(last_line.decode("utf-8", errors="ignore"), sep=" ")
+            if values.size >= 2:
+                tploss_value = float(values[1]) * 10.0  # 区分瞬时值和平均值
+                self.logger.info("Read tploss %.6f from %s", tploss_value, latest_file)
+                return tploss_value
+            raise ValueError("No tploss numeric column found in last line.")
+        except Exception as error:
+            self.logger.warning("Failed to parse %s, fallback to pandas parser: %s", latest_file, error)
+            tploss_value = float(pd.read_csv(latest_file, sep=r"\s+", skiprows=2).iloc[-1, 1]) * 10.0
+            self.logger.info("Read tploss %.6f from %s", tploss_value, latest_file)
+            return tploss_value
 
     def _compute_reward(self, tploss_scaled: float) -> float:
         return self.rl_config.baseline_tploss * 10.0 - tploss_scaled
@@ -306,24 +329,37 @@ class CompressorEnv(gym.Env):
         result = _try_cast(data_obj)
         return result if result is not None else np.zeros(0, dtype=np.float64)
 
+    def _flatten_surface_data(self, raw_data) -> np.ndarray:
+        if isinstance(raw_data, dict):
+            chunks: list[np.ndarray] = []
+            for surface_name in self.env_config.rake_names:
+                if surface_name in raw_data:
+                    chunks.append(self._to_1d_numeric_array(raw_data[surface_name]))
+            if chunks:
+                return np.concatenate(chunks)
+            return np.concatenate([self._to_1d_numeric_array(v) for v in raw_data.values() if v is not None])
+
+        if isinstance(raw_data, Iterable) and not isinstance(raw_data, (str, bytes, np.ndarray)):
+            chunks = [self._to_1d_numeric_array(v) for v in raw_data]
+            chunks = [chunk for chunk in chunks if chunk.size > 0]
+            if chunks:
+                return np.concatenate(chunks)
+
+        return self._to_1d_numeric_array(raw_data)
+
     def _read_rake_velocity_features(self) -> np.ndarray:
         target_points = int(self.env_config.rake_point_count)
-        vx_values: list[np.ndarray] = []
-        vy_values: list[np.ndarray] = []
 
         try:
             field_data = self.session.fields.field_data
-            for rake_name in self.env_config.rake_names:
-                vx_raw = field_data.get_scalar_field_data(field_name="x-velocity", surfaces=[rake_name])
-                vy_raw = field_data.get_scalar_field_data(field_name="y-velocity", surfaces=[rake_name])
-                vx_values.append(self._to_1d_numeric_array(vx_raw))
-                vy_values.append(self._to_1d_numeric_array(vy_raw))
+            surfaces = list(self.env_config.rake_names)
+            vx_raw = field_data.get_scalar_field_data(field_name="x-velocity", surfaces=surfaces)
+            vy_raw = field_data.get_scalar_field_data(field_name="y-velocity", surfaces=surfaces)
+            vx = self._flatten_surface_data(vx_raw)
+            vy = self._flatten_surface_data(vy_raw)
         except Exception as error:
             self.logger.warning("Failed to read rake velocities, fallback to zeros: %s", error)
             return np.zeros(target_points * 2, dtype=np.float32)
-
-        vx = np.concatenate(vx_values) if vx_values else np.zeros(0, dtype=np.float64)
-        vy = np.concatenate(vy_values) if vy_values else np.zeros(0, dtype=np.float64)
 
         if vx.size < target_points:
             vx = np.pad(vx, (0, target_points - vx.size), mode="constant")

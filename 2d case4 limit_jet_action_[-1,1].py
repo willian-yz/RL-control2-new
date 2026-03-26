@@ -1,6 +1,6 @@
 """Case 4 runner based on the unified RL+Fluent framework."""
 
-from rl_fluent_framework_2d_limit_action  import EnvConfig, RLConfig, ExperimentManager
+from rl_2d_frame_test  import EnvConfig, RLConfig, ExperimentManager
 
 
 def build_case5_configs() -> tuple[EnvConfig, RLConfig]:
