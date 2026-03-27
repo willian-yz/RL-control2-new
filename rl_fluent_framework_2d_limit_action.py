@@ -117,12 +117,13 @@ class CompressorEnv(gym.Env):
         self.a_min, self.a_max = self.rl_config.amplitude_range
         self.f_min, self.f_max = self.rl_config.frequency_range
 
+        # 下面这一段表示了是否使用delta_action，如果使用了那么速度[-1,1]阶梯递增，反之则是[0,1]
         if self.rl_config.use_delta_action:
             if self.rl_config.action_dim == 1:
                 self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
             else:
                 self.action_space = spaces.Box(
-                    low=np.array([-1.0, 0.0], dtype=np.float32),
+                    low=np.array([-1.0, -1.0], dtype=np.float32),
                     high=np.array([1.0, 1.0], dtype=np.float32),
                     dtype=np.float32,
                 )
