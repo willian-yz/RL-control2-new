@@ -129,20 +129,19 @@ class CompressorEnv(gym.Env):
                 )
         else:
             self.action_space = spaces.Box(low=0.0, high=1.0, shape=(self.rl_config.action_dim,), dtype=np.float32)
-        action_obs_low = -1.0 if self.rl_config.use_delta_action else 0.0
 
         velocity_feature_dim = self.env_config.rake_point_count * 2  # Vx+Vy
         if self.rl_config.action_dim == 1:
             self.observation_space = spaces.Box(
                 low=np.concatenate(
                     [
-                        np.array([action_obs_low, -np.inf], dtype=np.float32),  # A, tploss
+                        np.array([self.a_min / 100, -np.inf], dtype=np.float32),  # A, tploss
                         np.full(velocity_feature_dim, -np.inf, dtype=np.float32),
                     ]
                 ),
                 high=np.concatenate(
                     [
-                        np.array([1.0, np.inf], dtype=np.float32),
+                        np.array([self.a_max / 100, np.inf], dtype=np.float32),
                         np.full(velocity_feature_dim, np.inf, dtype=np.float32),
                     ]
                 ),
@@ -152,13 +151,13 @@ class CompressorEnv(gym.Env):
             self.observation_space = spaces.Box(
                 low=np.concatenate(
                     [
-                        np.array([action_obs_low, -1.0, -np.inf], dtype=np.float32),  # A, f, tploss
+                        np.array([self.a_min / 100, self.a_min / 100, -np.inf], dtype=np.float32),  # A, f, tploss
                         np.full(velocity_feature_dim, -np.inf, dtype=np.float32),
                     ]
                 ),
                 high=np.concatenate(
                     [
-                        np.array([1.0, 1.0, np.inf], dtype=np.float32),
+                        np.array([self.a_max / 100, self.a_max / 100, np.inf], dtype=np.float32),
                         np.full(velocity_feature_dim, np.inf, dtype=np.float32),
                     ]
                 ),
@@ -335,18 +334,18 @@ class CompressorEnv(gym.Env):
         vy = vy[:target_points]
         return np.concatenate([vx, vy]).astype(np.float32)
 
-    def _build_observation(self, action: np.ndarray, tploss_scaled: float) -> np.ndarray:
+    def _build_observation(self, tploss_scaled: float) -> np.ndarray:
         velocity_features = self._read_rake_velocity_features()
         if self.rl_config.action_dim == 1:
             return np.concatenate(
                 [
-                    np.array([action[0], tploss_scaled], dtype=np.float32),
+                    np.array([self.a_current / 100, tploss_scaled], dtype=np.float32),
                     velocity_features / 100, # 归一化
                 ]
             )
         return np.concatenate(
             [
-                np.array([action[0], action[1], tploss_scaled], dtype=np.float32),
+                np.array([self.a_current / 100, self.a_current_2 / 100, tploss_scaled], dtype=np.float32),
                 velocity_features / 100, # 归一化
             ]
         )
@@ -367,6 +366,7 @@ class CompressorEnv(gym.Env):
             amplitue = self._normalized_to_amplitude(action_init[0])
             self.current_velocity_expr = self._make_velocity_expression(amplitue)
             self._set_inlet_velocity(self.current_velocity_expr)
+            self.a_current = amplitue
         else:
             amplitude_1 = self._normalized_to_amplitude(action_init[0])
             amplitude_2 = self._normalized_to_amplitude(action_init[1])
@@ -374,9 +374,11 @@ class CompressorEnv(gym.Env):
             expr_2 = self._make_velocity_expression(amplitude_2)
             self.current_velocity_expr = f"{expr_1} | {expr_2}"
             self._set_inlet_velocity(expr_1, expr_2)
+            self.a_current = amplitude_1
+            self.a_current_2 = amplitude_2
 
         self.last_tploss = float(self.env_config.initial_tploss)
-        return self._build_observation(action_init, self.last_tploss)
+        return self._build_observation(self.last_tploss)
 
     def step(self, action):
         self.decision_count += 1
@@ -409,7 +411,7 @@ class CompressorEnv(gym.Env):
         done = self.decision_count >= self.env_config.max_decisions
         if done:
             self._needs_session_restart = True
-        obs = self._build_observation(action, tploss_scaled)
+        obs = self._build_observation(tploss_scaled)
 
         info = {
             "tploss_now": tploss_scaled,

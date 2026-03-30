@@ -34,7 +34,7 @@ def main() -> None:
     env_config, rl_config = build_case5_configs()
     manager = ExperimentManager(env_config, rl_config)
 
-    model_path = manager.train(train_steps=250*18,load_model_path=r'E:\A keti\Case\50theta_b_t1.6_bow20_M0.5_i+8.5_2D_change inlet large_ RL_new\artifacts\my_model_case7_step500.zip')
+    model_path = manager.train(train_steps=250*20)
     print(f"Saved model: {model_path}")
     plot_path_train = manager.plot_history(mode="train")
     print(f"Train history plot: {plot_path_train}")
