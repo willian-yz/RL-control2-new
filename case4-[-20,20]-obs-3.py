@@ -14,7 +14,7 @@ def build_case5_configs() -> tuple[EnvConfig, RLConfig]:
         initial_tploss=0.05,
         processor_count = 6,
         rake_names=("rake-1", "rake-2", "rake-3", "rake-4", "rake-5", "rake-6", "rake-7", "rake-8", "rake-9"),
-        rake_point_count=60, #60
+        rake_point_count=0, #60
     )
     rl_config = RLConfig(
         action_dim=2,

@@ -18,7 +18,7 @@ def build_case5_configs() -> tuple[EnvConfig, RLConfig]:
     )
     rl_config = RLConfig(
         action_dim=2,
-        amplitude_range=(-100.0, 250.0),
+        amplitude_range=(0, 250.0),
         baseline_tploss=0.05,
         max_delta_amplitude = 20.0, #修改后
         use_delta_action=True,      #修改后
